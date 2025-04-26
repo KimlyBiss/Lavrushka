@@ -8,12 +8,16 @@ class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
     tg_id = Column(Integer, unique=True)
-    username = Column(String(50))
-    playlists = relationship('Playlist', back_populates='user', lazy='joined') 
+    first_name = Column(String(64))
+    username = Column(String(64))
+    playlists = relationship('Playlist', back_populates='owner')
 
 class Playlist(Base):
     __tablename__ = 'playlists'
     id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    owner = relationship('User', back_populates='playlists', overlaps="user")
+    tracks = relationship('Track', back_populates='playlist')
     name = Column(String(100))
     description = Column(Text)
     cover_url = Column(String(200))
@@ -31,7 +35,6 @@ class Track(Base):
     file_id = Column(String(300))
     duration = Column(Integer, default=0)
     playlist_id = Column(Integer, ForeignKey('playlists.id'))
-    
     playlist = relationship("Playlist", back_populates="tracks")
 
 # Пересоздаем базу

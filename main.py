@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -23,6 +23,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
 
 async def format_duration(seconds: int) -> str:
     hours = seconds // 3600
@@ -59,38 +60,53 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     desc = update.message.text.strip()
     name = context.user_data.get('name')
+    user_data = update.effective_user
+    
     with Session() as session:
-        user = session.query(User).filter_by(tg_id=update.effective_user.id).first()
+        user = session.query(User).filter_by(tg_id=user_data.id).first()
         if not user:
             user = User(
-                tg_id=update.effective_user.id
+                tg_id=user_data.id,
+                first_name=user_data.first_name or "Пользователь",
+                username=user_data.username
             )
             session.add(user)
-            session.flush()
-        playlist = Playlist(name=name, description=desc, user_id=user.id)
+            session.commit()
+        
+        playlist = Playlist(
+            name=name,
+            description=desc,
+            user_id=user.id
+        )
         session.add(playlist)
         session.commit()
-    await update.message.reply_text(
-        f"✅ *Плейлист «{name}» создан!*", parse_mode="Markdown"
-    )
+
+    await update.message.reply_text(f"✅ *Плейлист «{name}» создан!*", parse_mode="Markdown")
     return ConversationHandler.END
 
 async def skip_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = context.user_data.get('name')
+    user_data = update.effective_user
+    
     with Session() as session:
-        user = session.query(User).filter_by(tg_id=update.effective_user.id).first()
+        user = session.query(User).filter_by(tg_id=user_data.id).first()
         if not user:
             user = User(
-                tg_id=update.effective_user.id
+                tg_id=user_data.id,
+                first_name=user_data.first_name or "Пользователь",
+                username=user_data.username
             )
             session.add(user)
-            session.flush()
-        playlist = Playlist(name=name, user_id=user.id)
+            session.commit()
+        
+        playlist = Playlist(
+            name=name,
+            user_id=user.id
+        )
         session.add(playlist)
         session.commit()
-    await update.message.reply_text(
-        f"✅ *Плейлист «{name}» создан!*", parse_mode="Markdown"
-    )
+
+    await update.message.reply_text(f"✅ *Плейлист «{name}» создан!*", parse_mode="Markdown")
     return ConversationHandler.END
 
 # ========== МОИ ПЛЕЙЛИСТЫ -> ВСЕ ПЛЕЙЛИСТЫ ========== #
@@ -131,7 +147,7 @@ async def show_all_playlists(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 # ========== ИНФОРМАЦИЯ О ПЛЕЙЛИСТЕ (ОБЩЕДОСТУПНАЯ) ========== #
-async def show_playlist_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_playlist_info(update: Update, context: ContextTypes.DEFAULT_TYPE, playlist_id: int = None):
     query = update.callback_query
     await query.answer()
     
@@ -141,43 +157,49 @@ async def show_playlist_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not playlist:
             return await query.message.reply_text("❌ Плейлист не найден!")
         
-        # Проверяем, является ли пользователь владельцем
         is_owner = (playlist.user.tg_id == update.effective_user.id)
         
         duration = await format_duration(playlist.duration)
         created_at = playlist.created_at.strftime("%d.%m.%Y")
         tracks_count = len(playlist.tracks)
+        owner_name = playlist.user.first_name or "Аноним"
         
         text = (
             f"🎧 *{playlist.name}*\n"
             f"_{playlist.description or 'Нет описания'}_\n\n"
             f"📅 Создан: `{created_at}`\n"
             f"🎶 Треков: `{tracks_count}`\n"
-            f"👤 Владелец: @{playlist.user.username or 'Anonymous'}\n\n"
+            f"👤 Владелец: {owner_name}\n\n"
             f"⚙️ *Действия:*"
         )
         
-        buttons = []
-        # Кнопки действий только для владельца
+        # Создаем клавиатуру
+        keyboard = []
+        
+        # Основная кнопка воспроизведения
+        keyboard.append([InlineKeyboardButton("▶️ Воспроизвести", callback_data=f"play_{playlist.id}")])
+        
+        # Кнопки для владельца
         if is_owner:
-            buttons = [
-                [InlineKeyboardButton("✏️ Удалить треки", callback_data=f"edit_{playlist.id}")],
-                [InlineKeyboardButton("🗑 Удалить плейлист", callback_data=f"del_{playlist.id}")]
-            ]
-        buttons.insert(0, [InlineKeyboardButton("▶️ Воспроизвести", callback_data=f"play_{playlist.id}")])
+            keyboard.append([
+                InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{playlist.id}"),
+                InlineKeyboardButton("🗑️ Удалить", callback_data=f"del_{playlist.id}")
+            ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
         if playlist.cover_url:
             await query.message.reply_photo(
                 photo=playlist.cover_url,
                 caption=text,
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(buttons)
+                reply_markup=reply_markup
             )
         else:
             await query.message.reply_text(
                 text,
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(buttons)
+                reply_markup=reply_markup
             )
 
 # ========== ЗАЩИЩЕННОЕ УДАЛЕНИЕ ========== #
@@ -214,7 +236,7 @@ async def play_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title=track.title
             )
 
-# ========== ДОБАВЛЕНИЕ ТРЕКА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ========== #
+# ========== ДОБАВЛЕНИЕ ТРЕКА ========== #
 async def add_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.audio:
         return await update.message.reply_text("❌ Отправьте аудиофайл!")
@@ -248,7 +270,7 @@ async def add_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_duration = playlist.duration
 
     # Отправляем сообщение вне сессии
-    return await update.message.reply_text(
+    await update.message.reply_text(
         f"🎵 *Трек успешно добавлен!*\n\n"
         f"▫️ Название: {track_title}\n"
         f"▫️ Плейлист: {playlist_name}\n"
@@ -264,8 +286,6 @@ async def edit_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     playlist_id = int(query.data.split("_")[1])
     with Session() as session:
         playlist = session.get(Playlist, playlist_id)
-        if not playlist:
-            return await query.message.reply_text("❌ Плейлист не найден!")
             
         if not playlist.tracks:
             return await query.message.reply_text("🎵 В плейлисте нет треков для удаления")
@@ -290,20 +310,39 @@ async def confirm_track_delete(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     
     track_id = int(query.data.split("_")[1])
+    
     with Session() as session:
-        track = session.get(Track, track_id)
-        if not track:
-            return await query.message.reply_text("❌ Трек не найден!")
+        try:
+            # Получаем трек и связанный плейлист
+            track = session.get(Track, track_id)
+            if not track:
+                await query.message.reply_text("❌ Трек не найден!")
+                return
+
+            playlist = track.playlist
+            track_title = track.title
             
-        playlist = track.playlist
-        track_title = track.title
-        playlist.duration -= track.duration  # Обновляем длительность
-        
-        session.delete(track)
-        session.commit()
-        
+            # Обновляем длительность плейлиста
+            playlist.duration -= track.duration
+            
+            # Удаляем трек и сохраняем изменения
+            session.delete(track)
+            session.commit()
+            
+            # Сохраняем ID плейлиста для дальнейшего использования
+            playlist_id = playlist.id
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при удалении трека: {e}")
+            await query.message.reply_text("❌ Произошла ошибка!")
+            return
+
+    # Уведомляем об успешном удалении
     await query.message.reply_text(f"🗑 Трек *{track_title}* удален!", parse_mode="Markdown")
-    await show_playlist_info(update, context)  # Возвращаемся к информации о плейлисте
+    
+    # Вызываем обновленную информацию о плейлисте
+    await show_playlist_info(update, context, playlist_id=playlist_id)
 
 # ========== ЗАПУСК БОТА ========== #
 def main():
